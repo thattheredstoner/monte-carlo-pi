@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Monte Carlo Pi Visualizer</title>
+    <style>
+        body {
+            background-color: #050505; /* Deep Black */
+            color: white;
+            font-family: 'Courier New', Courier, monospace;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            overflow: hidden; /* Prevent scrollbars */
+        }
+
+        #canvas-container {
+            position: relative;
+            box-shadow: 0 0 34px rgba(0, 255, 255, 0.06);
+            border-radius: 4px;
+        }
+
+        #sim-layout {
+            display: flex;
+            align-items: center;
+            gap: 28px;
+        }
+
+        canvas {
+            background-color: #ffffff; /* White paper look */
+            display: block;
+            box-shadow: inset 0 0 16px rgba(0,0,0,0.25); /* Softer inner glow for clarity */
+        }
+
+        #ui-layer {
+            position: absolute;
+            top: -60px;
+            left: 0;
+            width: 100%;
+            text-align: center;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            z-index: 100;
+        }
+
+        h2 { margin: 0; font-size: 2rem; letter-spacing: -1px;}
+        
+        #pi-display {
+            background-color: rgba(5, 5, 5, 0.9);
+            color: #fff;
+            padding: 10px 30px;
+            border-radius: 8px;
+            display: inline-block;
+            font-size: 24px; /* Large for Shorts readability */
+            font-weight: 600;
+            line-height: 1;
+            min-width: 220px;
+            border: 1px solid transparent;
+            text-shadow: 0 0 10px rgba(255, 255, 255, 0.6);
+            font-variant-numeric: tabular-nums lining-nums;
+            transform: translateZ(0) scale(1);
+            transform-origin: center center;
+            will-change: transform, color, text-shadow, border-color;
+            backface-visibility: hidden;
+            -webkit-font-smoothing: antialiased;
+            transition: color 180ms linear, text-shadow 180ms linear, border-color 180ms linear, transform 500ms cubic-bezier(0.22, 1, 0.36, 1);
+        }
+
+        #status {
+            font-size: 16px;
+            color: #aaa;
+            position: fixed;
+            bottom: 100px;
+        }
+
+        #coords {
+            font-size: 14px;
+            color: #8ed9ea;
+            position: fixed;
+            bottom: 74px;
+            letter-spacing: 0.2px;
+        }
+
+        #formula-panel {
+            width: 260px;
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: 10px;
+            padding: 16px;
+            box-shadow: 0 0 18px rgba(0, 0, 0, 0.35);
+        }
+
+        #formula-panel h3 {
+            margin: 0 0 10px 0;
+            font-size: 18px;
+            color: #d7f7ff;
+            letter-spacing: 0.4px;
+        }
+
+        #formula-panel p {
+            margin: 8px 0;
+            color: #d3d3d3;
+            font-size: 14px;
+            line-height: 1.45;
+        }
+
+        #formula-panel .eq {
+            display: block;
+            margin-top: 4px;
+            color: #ffffff;
+            font-size: 17px;
+        }
+        
+        /* Start Overlay */
+        #overlay {
+            position: absolute;
+            top:0;
+            left:0;
+            width:100%;
+            height:100%;
+            background:rgba(0,0,0,0.8);
+            display:flex;
+            justify-content:center;
+            align-items:center;
+            z-index: 99;
+            cursor:pointer;
+        }
+    </style>
+</head>
+<body>
+
+<div id="sim-layout">
+    <div id="canvas-container">
+        <div id="ui-layer">
+            <!-- Pi Value Display -->
+            <span style="font-size:14px;color:#666;">CALCULATING...</span><br>
+            <div id="pi-display" class="glow-text">0.0000</div>
+            <div id="status">Dots: 0 / 0</div>
+            <div id="coords">Last point (unit square): (0.0000, 0.0000)</div>
+        </div>
+        
+        <canvas id="simCanvas"></canvas>
+
+        <!-- Click to start overlay -->
+        <div id="overlay"><h1 style="color:white; text-shadow: 2px 2px #ff3e6c;text-align:center">CLICK TO START SIMULATION</h1></div>
+    </div>
+
+    <aside id="formula-panel">
+        <h3>Monte Carlo Formula</h3>
+        <p>
+            Estimate pi from random points:
+            <span class="eq">pi ~= 4 * (inside / total)</span>
+        </p>
+        <p>
+            A point is inside the circle when:
+            <span class="eq">(x - cx)^2 + (y - cy)^2 <= r^2</span>
+        </p>
+    </aside>
+</div>
+
+<script>
+    const canvas = document.getElementById('simCanvas');
+    const ctx = canvas.getContext('2d');
+    
+    // Configuration for the Short (High resolution)
+    canvas.width = 460; 
+    canvas.height = 520; 
+    
+    let width = canvas.width;
+    let height = canvas.height;
+    let centerX = width / 2;
+    let centerY = height / 2;
+
+    // Simulation controls
+    const MAX_POINTS = 50000;      // Total points to generate
+    const POINTS_PER_BATCH = 1;  // Points generated each simulation step
+    const BATCH_DELAY_MS = 100;     // Delay between steps (higher = slower)
+    //const POINTS_PER_BATCH = 500;  // Points generated each simulation step
+    //const BATCH_DELAY_MS = 50;     // Delay between steps (higher = slower)
+    
+    // Radius of the circle (square is diameter)
+    const radius = Math.min(width, height) * 0.45; 
+    
+    // Stats variables
+    let totalPoints = 0;
+    let insideCount = 0;
+    let piEstimate = 3.14;
+    let displayedTotalPoints = 0;
+    let displayedInsideCount = 0;
+    let lastPointX = 0;
+    let lastPointY = 0;
+    let lastPointInside = false;
+    let lastUiFrameMs = 0;
+    let uiLoopRunning = false;
+
+    const piDisplayEl = document.getElementById('pi-display');
+    const statusEl = document.getElementById('status');
+    const coordsEl = document.getElementById('coords');
+    const canvasContainerEl = document.getElementById('canvas-container');
+    const formulaTitleEl = document.querySelector('#formula-panel h3');
+
+    // Audio Context Setup (Synthesizer)
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const SOUND_INTERVAL_MS = 35; // Minimum gap between sound triggers
+    let lastSoundTimeMs = 0;
+
+    // Softer output chain: tone -> filter -> compressor -> master gain -> speakers
+    const masterGain = audioCtx.createGain();
+    const lowpass = audioCtx.createBiquadFilter();
+    const compressor = audioCtx.createDynamicsCompressor();
+
+    lowpass.type = 'lowpass';
+    lowpass.frequency.setValueAtTime(1400, audioCtx.currentTime);
+    lowpass.Q.setValueAtTime(0.7, audioCtx.currentTime);
+
+    compressor.threshold.setValueAtTime(-24, audioCtx.currentTime);
+    compressor.knee.setValueAtTime(30, audioCtx.currentTime);
+    compressor.ratio.setValueAtTime(10, audioCtx.currentTime);
+    compressor.attack.setValueAtTime(0.005, audioCtx.currentTime);
+    compressor.release.setValueAtTime(0.12, audioCtx.currentTime);
+
+    masterGain.gain.setValueAtTime(1.00, audioCtx.currentTime);
+
+    lowpass.connect(compressor);
+    compressor.connect(masterGain);
+    masterGain.connect(audioCtx.destination);
+    
+    function playSound(type) {
+        if(audioCtx.state === 'suspended') return;
+
+        const nowMs = performance.now();
+        if(nowMs - lastSoundTimeMs < SOUND_INTERVAL_MS) return;
+        lastSoundTimeMs = nowMs;
+        
+        const osc = audioCtx.createOscillator();
+        const gainNode = audioCtx.createGain();
+        
+        osc.connect(gainNode);
+        gainNode.connect(lowpass);
+
+        // Lower, narrower frequency range sounds less piercing.
+        const randomFreq = 320 + Math.random() * 180; 
+        const now = audioCtx.currentTime;
+        
+        if(type === 'hit') {
+            osc.type = 'triangle';
+            osc.frequency.setValueAtTime(randomFreq, now);
+
+            // Gentle attack/release to avoid sharp clicks.
+            gainNode.gain.setValueAtTime(0.0001, now);
+            gainNode.gain.linearRampToValueAtTime(0.05, now + 0.012);
+            gainNode.gain.exponentialRampToValueAtTime(0.0001, now + 0.1);
+        } else {
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(randomFreq - 70, now);
+
+            gainNode.gain.setValueAtTime(0.0001, now);
+            gainNode.gain.linearRampToValueAtTime(0.03, now + 0.01);
+            gainNode.gain.exponentialRampToValueAtTime(0.0001, now + 0.08);
+        }
+
+        osc.start(now);
+        osc.stop(now + (type === 'hit' ? 0.11 : 0.09));
+    }
+
+    function drawCircle() {
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, radius, 0, Math.PI * 2, false);
+        ctx.fillStyle = '#f4fbff'; // Lighter fill to improve dot contrast
+        ctx.fill();
+        
+        // Neon Cyan Circle Border
+        ctx.lineWidth = 2; 
+        ctx.strokeStyle = 'rgba(0, 150, 255, 0.25)';
+        ctx.stroke();
+
+        // White border around square area (visual frame)
+        ctx.lineWidth = 5;
+        ctx.strokeStyle = '#ddd';
+        const size = radius * 2 + 20; // Add padding for the white box look
+    }
+
+    function drawParticle(x, y, isInside) {
+        lastPointX = x;
+        lastPointY = y;
+        lastPointInside = isInside;
+
+        if(isInside) {
+            insideCount++;
+            
+            // Softer cyan with reduced glow for better readability.
+            ctx.fillStyle = '#00a6c4'; 
+            ctx.shadowColor = "#00d9ff";
+            ctx.shadowBlur = 5;
+            playSound('hit'); // Play sound
+            
+        } else {
+            // Red/Pink Dimmer dot for outside
+            ctx.fillStyle = 'rgba(236, 74, 98, 0.6)'; 
+            ctx.shadowColor = "transparent";
+            playSound('miss');
+        }
+
+        // Draw the pixel (sized for visibility in video)
+        const sizeForVideo = Math.max(2 + (Math.random()), 3); 
+        
+        // Optimization: Don't draw if it's too small and hidden, but here we want visuals!
+        
+        ctx.beginPath();
+        ctx.arc(x, y, sizeForVideo/1.5, 0, 2 * Math.PI); 
+        ctx.fill();
+
+        // Reset shadow for next frame performance (crucial)
+        ctx.shadowBlur = 0; 
+        
+        totalPoints++;
+    }
+
+    function getHeatColorForPi(piValue) {
+        const error = Math.abs(piValue - Math.PI);
+        const normalizedError = Math.min(error / 0.35, 1);
+
+        let hue;
+        if(normalizedError < 0.5) {
+            hue = 120 - ((normalizedError / 0.5) * 60); // Green -> Yellow
+        } else {
+            hue = 60 - (((normalizedError - 0.5) / 0.5) * 50); // Yellow -> Orange/Red
+        }
+
+        const roundedHue = Math.round(hue);
+        const solid = `hsl(${roundedHue}, 95%, 55%)`;
+        const glow = `hsla(${roundedHue}, 95%, 55%, 0.35)`;
+
+        return { solid, glow };
+    }
+
+    function updateDisplay() {
+        if(!uiLoopRunning) return;
+
+        const nowMs = performance.now();
+        if(lastUiFrameMs === 0) lastUiFrameMs = nowMs;
+
+        const elapsedSeconds = (nowMs - lastUiFrameMs) / 1000;
+        lastUiFrameMs = nowMs;
+
+        // Move visible counts toward true counts at the simulation's average point rate.
+        const pointsPerSecond = (POINTS_PER_BATCH * 1000) / BATCH_DELAY_MS;
+        const step = Math.max(1, Math.floor(pointsPerSecond * elapsedSeconds));
+
+        if(displayedTotalPoints < totalPoints) {
+            displayedTotalPoints = Math.min(totalPoints, displayedTotalPoints + step);
+        }
+
+        if(displayedInsideCount < insideCount) {
+            const insideRatio = totalPoints > 0 ? (insideCount / totalPoints) : 0;
+            const insideStep = Math.max(1, Math.floor(step * insideRatio));
+            displayedInsideCount = Math.min(insideCount, displayedInsideCount + insideStep);
+        }
+
+        if(displayedTotalPoints > 0) {
+            piEstimate = (4 * displayedInsideCount / displayedTotalPoints);
+
+            const formattedPi = piEstimate.toFixed(4);
+            const normalizedX = (lastPointX - (centerX - radius)) / (2 * radius);
+            const normalizedY = (lastPointY - (centerY - radius)) / (2 * radius);
+            const coordsLabel = `Last point (unit square): (${normalizedX.toFixed(4)}, ${normalizedY.toFixed(4)})`;
+            const heatColor = getHeatColorForPi(piEstimate);
+
+            // Size timer: growth is based on closeness to pi (both sides).
+            const closenessRange = 0.2;
+            const closenessProgress = Math.max(0, Math.min(1, 1 - (Math.abs(piEstimate - Math.PI) / closenessRange)));
+            const dynamicScale = 1 + (closenessProgress * 0.6);
+            const dynamicFontWeight = 600 + Math.round(closenessProgress * 220);
+
+            piDisplayEl.innerText = `π ≈ ${formattedPi}`;
+            statusEl.innerText = `Dots: ${displayedTotalPoints.toLocaleString()} / ${MAX_POINTS.toLocaleString()}`;
+            coordsEl.innerText = coordsLabel;
+
+            piDisplayEl.style.color = heatColor.solid;
+            piDisplayEl.style.borderColor = heatColor.solid;
+            piDisplayEl.style.textShadow = `0 0 12px ${heatColor.glow}`;
+            piDisplayEl.style.transform = `translateZ(0) scale(${dynamicScale.toFixed(3)})`;
+            piDisplayEl.style.fontWeight = `${dynamicFontWeight}`;
+
+            canvasContainerEl.style.boxShadow = `0 0 34px ${heatColor.glow}`;
+        }
+
+        const needsAnotherFrame =
+            totalPoints < MAX_POINTS ||
+            displayedTotalPoints < totalPoints ||
+            displayedInsideCount < insideCount;
+
+        if(needsAnotherFrame) {
+            requestAnimationFrame(updateDisplay);
+        } else {
+            uiLoopRunning = false;
+        }
+    }
+
+    // Main Simulation Loop (Batches processing)
+    function runSimulation() {
+        let batchCount = POINTS_PER_BATCH; // Adjustable batch size
+        
+        for(let i=0; i<batchCount && totalPoints < MAX_POINTS; i++) {
+            // Random point in square [-1, 1] relative to center
+            let x = Math.random() * radius * 2 - radius + centerX; 
+            let y = Math.random() * radius * 2 - radius + centerY;
+
+            // Check distance from circle center, not from the canvas origin.
+            const dx = x - centerX;
+            const dy = y - centerY;
+
+            if (dx*dx + dy*dy <= radius*radius) {
+                drawParticle(x, y, true);
+            } else {
+                 // Draw the "miss" ponts differently so they are visible but distinct
+                drawParticle(x, y, false); 
+            }
+        }
+        
+           if(totalPoints < MAX_POINTS) {
+               setTimeout(() => requestAnimationFrame(runSimulation), BATCH_DELAY_MS);
+        }
+    }
+
+    // Shared start handler so click and keyboard use the same path.
+    let hasStarted = false;
+
+    function startSimulation() {
+        if(hasStarted) return;
+        hasStarted = true;
+
+        document.getElementById('overlay').style.display = 'none';
+
+        if(audioCtx.state === 'suspended') audioCtx.resume();
+
+        drawCircle();
+        statusEl.innerText = `Dots: 0 / ${MAX_POINTS.toLocaleString()}`;
+        uiLoopRunning = true;
+        lastUiFrameMs = 0;
+        requestAnimationFrame(updateDisplay);
+        runSimulation(); // Start the loop
+    }
+
+    // Start Button Logic (Required for Audio Context in browsers)
+    document.getElementById('overlay').addEventListener('click', startSimulation);
+
+    // Allow pressing Space to start as an alternative to clicking.
+    document.addEventListener('keydown', (event) => {
+        if(event.code === 'Space' && !hasStarted) {
+            event.preventDefault();
+            startSimulation();
+        }
+    });
+
+</script>
+</body>
+</html>
